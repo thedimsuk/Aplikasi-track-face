@@ -1,0 +1,506 @@
+// ---------------------------------------------------------------------------
+// ModelLive2D — implementasi memakai Cubism SDK for Native resmi. [Bagian 1/4]
+// Util berkas + cari/periksa folder (tanpa SDK/GL).
+// ---------------------------------------------------------------------------
+#include "render/ModelLive2D.hpp"
+
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+// Baca seluruh isi berkas ke memori. false bila gagal/tidak wajar.
+bool bacaBerkas(const std::string& jalur, std::vector<unsigned char>& keluar) {
+  std::ifstream f(jalur, std::ios::binary | std::ios::ate);
+  if (!f) return false;
+  const auto n = static_cast<size_t>(f.tellg());
+  if (n == 0 || n > 256 * 1024 * 1024) return false;  // maks 256 MB
+  f.seekg(0);
+  keluar.resize(n);
+  return static_cast<bool>(f.read(reinterpret_cast<char*>(keluar.data()), n));
+}
+
+}  // namespace
+
+std::string ModelLive2D::cariModel3Json(const std::string& folder) {
+  std::error_code ec;
+  if (!fs::is_directory(folder, ec)) return {};
+  auto cocok = [](const fs::directory_entry& e) {
+    if (!e.is_regular_file()) return false;
+    const std::string nama = e.path().filename().string();
+    return nama.size() > 11 &&
+           nama.compare(nama.size() - 11, 11, ".model3.json") == 0;
+  };
+  for (const auto& e : fs::directory_iterator(folder, ec)) {  // langsung
+    std::error_code ec2;
+    if (cocok(e)) return e.path().string();
+    (void)ec2;
+  }
+  for (const auto& e : fs::directory_iterator(folder, ec)) {  // 1 tingkat
+    if (!e.is_directory()) continue;
+    for (const auto& f : fs::directory_iterator(e.path(), ec)) {
+      if (cocok(f)) return f.path().string();
+    }
+  }
+  return {};
+}
+
+// === LANJUTAN-BAGIAN-2 ===
+
+std::string ModelLive2D::periksaFolder(const std::string& folder) {
+  std::error_code ec;
+  if (!fs::exists(folder, ec)) {
+    return "Folder tidak ditemukan.\n\nPilih folder model yang benar, lalu coba lagi.";
+  }
+  if (!fs::is_directory(folder, ec)) {
+    return "Yang dipilih bukan folder.\n\nPilih folder model (yang berisi berkas .model3.json), bukan berkasnya langsung.";
+  }
+  const std::string model3 = cariModel3Json(folder);
+  if (model3.empty()) {
+    return "Tidak ada berkas .model3.json di folder ini.\n\nPastikan Anda memilih folder model yang berisi berkas .model3.json beserta .moc3 dan gambar tekstur. Coba pilih folder lain.";
+  }
+  std::vector<unsigned char> isi;
+  if (!bacaBerkas(model3, isi) || isi.empty()) {
+    return "Berkas .model3.json tidak bisa dibaca.\n\nMungkin berkas rusak atau izin baca kurang. Coba unduh ulang modelnya.";
+  }
+  const std::string teks(isi.begin(), isi.end());
+  if (teks.find(".moc3") == std::string::npos) {
+    return "Berkas .model3.json tidak merujuk ke .moc3.\n\nModel ini tampaknya tidak lengkap atau rusak. Coba unduh ulang modelnya dari sumber aslinya.";
+  }
+  // Cari berkas .moc3 yang dirujuk (atau .moc3 apa pun di dekatnya).
+  bool mocAda = false;
+  for (size_t pos = teks.find(".moc3"); pos != std::string::npos;
+       pos = teks.find(".moc3", pos + 5)) {
+    size_t awal = teks.rfind('"', pos);
+    if (awal == std::string::npos) continue;
+    const std::string rel = teks.substr(awal + 1, pos + 5 - awal - 1);
+    if (rel.empty() || rel.size() > 256) continue;
+    std::error_code ec2;
+    if (fs::exists(fs::path(model3).parent_path() / rel, ec2)) {
+      mocAda = true;
+      break;
+    }
+  }
+  if (!mocAda) {
+    const fs::path basis = fs::path(model3).parent_path();
+    for (const auto& e : fs::directory_iterator(basis, ec)) {
+      if (e.is_regular_file() && e.path().extension() == ".moc3") {
+        mocAda = true;
+        break;
+      }
+    }
+  }
+  if (!mocAda) {
+    return "Berkas .moc3 tidak ditemukan di folder model.\n\nFolder model harus berisi .model3.json, .moc3, dan gambar tekstur dalam satu paket. Coba unduh ulang modelnya secara lengkap.";
+  }
+  return {};  // lengkap
+}
+
+// === LANJUTAN-BAGIAN-3 ===
+// Stub bila SDK tidak ada: aplikasi tetap dibangun, muat selalu memberi
+// pesan yang jelas (persyaratan LISENSI).
+#ifndef AVATAR_HAVE_CUBISM
+
+ModelLive2D::ModelLive2D() = default;
+ModelLive2D::~ModelLive2D() = default;
+
+bool ModelLive2D::muatModel(const std::string&, const std::string&) {
+  galat_ =
+      "Cubism SDK belum dipasang.\n\n"
+      "Unduh Cubism SDK for Native dari situs Live2D, lalu bangun ulang — "
+      "caranya ada di README (bagian 'Cubism SDK').";
+  return false;
+}
+void ModelLive2D::buang() {
+#ifdef AVATAR_HAVE_CUBISM
+  if (rincian_) {
+    delete rincian_;
+    rincian_ = nullptr;
+  }
+  ada_ = false;
+#else
+  ada_ = false;
+#endif
+}
+
+// === LANJUTAN-BAGIAN-4 ===
+// Rincian — implementasi pribadi (PIMPL) dari ModelLive2D. DIPERBEAKAN di
+// dalam kondisi #ifdef AVATAR_HAVE_CUBISM, sehingga header ModelLive2D.hpp
+// tidak tergantung ke SDK.
+
+#ifdef AVATAR_HAVE_CUBISM
+struct ModelLive2D::Rincian {
+  bool salah = false;
+
+  Csm::CubismModel* model3 = nullptr;        // .model3.json (reader)
+  Csm::CubismMoc* moc = nullptr;             // data .moc3
+  Csm::CubismUserModel* userModel = nullptr; // state animasi (vtx, width, height)
+  Csm::CubismModelSettingJson* modelSetting = nullptr;
+  Csm::CubismMotionManager* motionManager = nullptr;
+  Csm::CubismExpressionManager* expressionManager = nullptr;
+  Csm::CubismEyeBlink* eyeBlink = nullptr;
+  Csm::CubismBreath* breath = nullptr;
+  Csm::CubismPose* pose = nullptr;
+  Csm::CubismPhysics* physics = nullptr;
+  Csm::CubismRenderer_OpenGLES2* renderer = nullptr;
+  Csm::CubismOffscreenManager_OpenGLES2* offscreen = nullptr;
+  GLuint shaderProgram = 0;
+  GLuint VAO = 0;
+  GLuint VBO = 0;
+  GLuint EBO = 0;
+
+  // Geometri yang dicek tiap frame saat physics berjalan.
+  Csm::CubismModelMatrix matrix;
+  Csm::CubismMatrix44 project;
+
+  // State rendering.
+  float scale = 1.0f;
+  float rataTengahX = 0.0f;
+  float rataTengahY = 0.0f;
+  float waktu = 0.0f;
+
+  // Jalur model + folder model.
+  std::string model3Path;
+  std::string folderModel;
+};
+#endif
+
+void ModelLive2D::perbarui(float deltaDetik) {
+#ifdef AVATAR_HAVE_CUBISM
+  if (!rincian_) return;
+  Rincian* r = rincian_;
+  r->waktu += deltaDetik;
+
+  // Watcher motion — ambil grup motion idle dari motion manager.
+  Csm::csmInt32 count = 0;
+  if (r->motionManager) count = r->motionManager->GetMotionCount();
+  Csm::csmInt32 idleId = Csm::CubismModel::InvalidId;
+  for (Csm::csmInt32 i = 0; i < count; ++i) {
+    Csm::csmInt32 id = Csm::CubismModel::InvalidId;
+    if (!r->motionManager->GetMotionId(i, &id)) continue;
+    Csm::csmInt32 prio = 0;
+    Csm::csmChar komentar[256] = "";
+    if (!r->motionManager->GetMotionInfo(id, &prio, komentar)) continue;
+    if (std::string(komentar) == "idle" || std::string(komentar) == "Idle") {
+      idleId = id;
+      break;
+    }
+  }
+  if (idleId != Csm::CubismModel::InvalidId) {
+    r->userModel->SetMotionManager(r->motionManager);
+    r->userModel->StartMotion(idleId, true);
+  }
+
+  if (r->userModel) r->userModel->Update();
+  if (r->modelSetting) r->modelSetting->Update();
+  if (r->breath) r->breath->Update(r->waktu);
+  if (r->eyeBlink && r->eyeBlink->IsInitialized()) {
+    r->eyeBlink->UpdateEyeBlink(r->waktu);
+  }
+  if (r->expressionManager) r->expressionManager->Update();
+  if (r->physics && r->physics->IsInitialized()) {
+    r->physics->Update();
+  }
+#else
+  (void)deltaDetik;
+#endif
+}
+
+void ModelLive2D::gambar(int lebar, int tinggi) {
+#ifdef AVATAR_HAVE_CUBISM
+  if (!rincian_ || !rincian_->userModel) return;
+  Rincian* r = rincian_;
+
+  // Hitung scaling + centering SEBELUM draw. Pola LAppDelegate.cpp.
+  const float sw = static_cast<float>(lebar);
+  const float sh = static_cast<float>( tinggi);
+  const float modelW = r->userModel->GetWidth();
+  const float modelH = r->userModel->GetHeight();
+  const float s = std::min(sw / modelW, sh / modelH);
+  r->scale = s * 0.9f;
+  r->rataTengahX = (sw - modelW * s) * 0.5f;
+  r->rataTengahY = (sh - modelH * s) * 0.5f;
+
+  // Render model ke framebuffer (kalau ada offscreen) atau langsung ke
+  // GL viewport.
+  if (r->offscreen) {
+    r->offscreen->SetViewport(0, 0, lebar, tinggi);
+    r->offscreen->BeginDraw();
+    r->renderer->Draw(r->userModel, r->shaderProgram);
+    r->offscreen->EndDraw();
+  } else {
+    r->renderer->Draw(r->userModel, r->shaderProgram);
+  }
+#else
+  (void)lebar;
+  (void)tinggi;
+#endif
+}
+
+#else  // AVATAR_HAVE_CUBISM — implementasi penuh memakai SDK resmi.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
+#include <CubismFramework.hpp>
+#include <CubismDefaultParameterId.hpp>
+#include <ICubismAllocator.hpp>
+#include <ICubismModelSetting.hpp>
+#include <CubismModelSettingJson.hpp>
+#include <Id/CubismIdManager.hpp>
+#include <Math/CubismMatrix44.hpp>
+#include <Math/CubismModelMatrix.hpp>
+#include <Model/CubismModel.hpp>
+#include <Model/CubismUserModel.hpp>
+#include <Effect/CubismBreath.hpp>
+#include <Effect/CubismEyeBlink.hpp>
+#include <Effect/CubismPose.hpp>
+#include <Physics/CubismPhysics.hpp>
+#include <Motion/CubismMotion.hpp>
+#include <Motion/CubismMotionManager.hpp>
+#include <Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp>
+#include <Utils/CubismString.hpp>
+
+// stb_image dibundel SDK — untuk memuat PNG tekstur (pola LAppTextureManager).
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
+using namespace Live2D::Cubism::Framework;
+using Csm::csmByte;
+using Csm::csmSizeInt;
+
+namespace {
+
+// Alokator untuk Framework (pola LAppAllocator resmi: malloc/free).
+class Alokator : public Csm::ICubismAllocator {
+ public:
+  void* Allocate(const Csm::csmSizeType ukuran) override {
+    return std::malloc(ukuran);
+  }
+  void Deallocate(void* memori) override { std::free(memori); }
+  void* AllocateAligned(const Csm::csmSizeType ukuran,
+                        const Csm::csmUint32 alignment) override {
+    size_t n = static_cast<size_t>(ukuran);
+    const size_t a = alignment ? alignment : alignof(void*);
+    n = ((n + a - 1) / a) * a;
+    return std::aligned_alloc(a, n ? n : a);
+  }
+  void DeallocateAligned(void* memori) override { std::free(memori); }
+};
+
+Alokator gAlokator;
+bool gSdkJalan = false;
+std::string gFolderBinary;  // diisi App saat mulai (untuk cari shader)
+
+// Pemuat berkas untuk Framework: dipakai memuat shader
+// ("FrameworkShaders/..."). Coba direktori kerja, lalu folder binary.
+csmByte* muatBerkasSdk(const std::string jalur, csmSizeInt* ukuran) {
+  std::vector<unsigned char> isi;
+  if (!bacaBerkas(jalur, isi) && !gFolderBinary.empty()) {
+    if (!bacaBerkas(gFolderBinary + "/" + jalur, isi)) return nullptr;
+  }
+  if (isi.empty()) return nullptr;
+  csmByte* buf = static_cast<csmByte*>(std::malloc(isi.size()));
+  if (!buf) return nullptr;
+  std::memcpy(buf, isi.data(), isi.size());
+  *ukuran = static_cast<csmSizeInt>(isi.size());
+  return buf;
+}
+
+void lepasBerkasSdk(Csm::csmByte* berkas) { std::free(berkas); }
+
+// Nyalakan Framework sekali per proses. Harus dipanggil saat konteks GL
+// avatar sedang aktif (CreateRenderer memanggil fungsi GL).
+bool pastikanSdkJalan() {
+  if (gSdkJalan) return true;
+  Csm::CubismFramework::Option opsi;
+  opsi.LogFunction = nullptr;
+  opsi.LoggingLevel = Csm::CubismFramework::Option::LogLevel_Off;
+  opsi.LoadFileFunction = muatBerkasSdk;
+  opsi.ReleaseBytesFunction = lepasBerkasSdk;
+  if (!Csm::CubismFramework::StartUp(&gAlokator, &opsi)) return false;
+  Csm::CubismFramework::Initialize();
+  gSdkJalan = true;
+  return true;
+}
+
+}  // namespace
+
+// === LANJUTAN-BAGIAN-4 ===
+
+std::string ModelLive2D::muatModel(const std::string& model3Path,
+                                   const std::string& folderModel) {
+#ifdef AVATAR_HAVE_CUBISM
+  if (!pastikanSdkJalan()) {
+    galat_ =
+        "SDK Cubism belum disiapkan di sistem.\\n\\n"
+        "Unduh Cubism SDK for Native dari situs Live2D, lalu bangun ulang — "
+        "caranya ada di README (bagian 'Cubism SDK').";
+    return galat_;
+  }
+
+  Rincian* r = new Rincian;
+  r->salah = false;
+  r->model3Path = model3Path;
+  r->folderModel = folderModel;
+  r->waktu = 0.0f;
+  r->model3 = nullptr;
+  r->moc = nullptr;
+  r->userModel = nullptr;
+  r->modelSetting = nullptr;
+  r->motionManager = nullptr;
+  r->expressionManager = nullptr;
+  r->eyeBlink = nullptr;
+  r->breath = nullptr;
+  r->pose = nullptr;
+  r->physics = nullptr;
+  r->renderer = nullptr;
+  r->offscreen = nullptr;
+  r->shaderProgram = 0;
+  r->VAO = 0;
+  r->VBO = 0;
+  r->EBO = 0;
+  r->scale = 1.0f;
+  r->rataTengahX = 0.0f;
+  r->rataTengahY = 0.0f;
+
+  r->model3 = Csm::CubismModel::Create();
+  if (!r->model3) {
+    galat_ = "Gagal membuat objek model Live2D.";
+    delete r;
+    return galat_;
+  }
+  const bool muat = r->model3->Load(r->model3Path.c_str());
+  if (!muat) {
+    galat_ = "Gagal memuat " + r->model3Path +
+             ". Pastikan berkas .model3.json dan .moc3 ada di folder.";
+    delete r;
+    return galat_;
+  }
+
+  r->moc = r->model3->GetMoc();
+  if (!r->moc) {
+    galat_ = "Gagal mendapatkan data .moc3 dari model.";
+    delete r;
+    return galat_;
+  }
+  r->moc->SetModel(r->model3.get());
+
+  const std::string modelName =
+      r->model3->GetModelSetting()->GetModelName();
+  nama_ = modelName;
+
+  // ModelSetting (drag & drop, pose, parameter).
+  r->modelSetting = new Csm::CubismModelSettingJson;
+  if (!r->modelSetting->Load(r->model3Path.c_str())) {
+    delete r->modelSetting;
+    r->modelSetting = nullptr;
+  }
+
+  r->userModel = new Csm::CubismUserModel;
+  if (!r->userModel->Setup(r->moc)) {
+    delete r->userModel;
+    r->userModel = nullptr;
+    galat_ = "Gagal menyusun model dari .moc3.";
+    delete r;
+    return galat_;
+  }
+  r->userModel->SetVisibility(false);
+  r->userModel->SetPose(nullptr);
+
+  // Framework SDK meminta nama model untuk mencari resource (tekstur, motion).
+  r->userModel->SetModelName(modelName.c_str());
+
+  // Manager motion — ambil grup motion, prioritas, komentar dari model config
+  // (misal: Motion > Idle > 0 > 5 > "default").
+  r->motionManager = new Csm::CubismMotionManager;
+  const bool sdBisa = r->motionManager->Setup(r->moc);
+  if (!sdBisa) {
+    delete r->motionManager;
+    r->motionManager = nullptr;
+  }
+
+  r->expressionManager = new Csm::CubismExpressionManager;
+  const bool expDapat = r->expressionManager->Setup(r->moc);
+  if (!expDapat) {
+    delete r->expressionManager;
+    r->expressionManager = nullptr;
+  }
+
+  // EyeBlink / Breath / Pose / Physics — selalu ada di model contoh.
+  r->eyeBlink = new Csm::CubismEyeBlink;
+  if (!r->eyeBlink->Setup(r->moc)) {
+    delete r->eyeBlink;
+    r->eyeBlink = nullptr;
+  }
+
+  r->breath = new Csm::CubismBreath;
+  if (!r->breath->Setup(r->moc)) {
+    delete r->breath;
+    r->breath = nullptr;
+  }
+
+  r->pose = new Csm::CubismPose;
+  if (!r->pose->Setup(r->moc)) {
+    delete r->pose;
+    r->pose = nullptr;
+  }
+
+  r->physics = new Csm::CubismPhysics;
+  if (!r->physics->Setup(r->moc)) {
+    delete r->physics;
+    r->physics = nullptr;
+  }
+
+  // Spread/Widen/ApplyPhysics akan diatur tiap frame (fair-skinned fallback).
+  // ID model contoh biasanya bertipe float/bool, jadi ini tumpang tindih
+  // dengan parameter default SDK. Karena itu sinkronisasi desimal dibuat
+  // eksplisit di perbarui() berikutnya.
+
+  // Baca konfigurasi untuk mengatur layar default (kalau ada).
+  jikaAdaKonfigurasi(r);
+
+  // Hitungan ekran untuk pemodelan (scaling, centering) dilakukan di
+  // gambar() setelah konteks GL avatar aktif.
+
+  // Grafik kinerja: jalankan physics ringan (bukan fallback shader) dengan
+  // vSync off.
+  if (!r->physics->IsInitialized()) {
+    if (!r->physics->Setup(r->moc)) r->salah = true;
+  }
+  if (r->physics->IsInitialized()) {
+    r->physics->AddParameter(r->userModel->GetModelParameterId(
+        Csm::CubismParameterId::DefaultParameterId::Breath));
+    r->physics->AddParameter(r->userModel->GetModelParameterId(
+        Csm::CubismParameterId::DefaultParameterId::EyeBlink));
+    r->physics->AddParameter(r->userModel->GetModelParameterId(
+        Csm::CubismParameterId::DefaultParameterId::Pose));
+  }
+
+  jikaAdaMotionGrup(r, "Idle");
+  jikaAdaMotionGrup(r, "idle");
+  jikaAdaMotionGrup(r, "Idle_M");
+  jikaAdaMotionGrup(r, "motion");
+
+  // Physics diaktifkan setelah motion ter-update.
+  if (r->physics->IsInitialized()) {
+    r->physics->UpdateParameter(r->userModel->GetModelParameterId(
+        Csm::CubismParameterId::DefaultParameterId::Physics));
+  }
+
+  ada_ = true;
+  return {};
+#else
+  galat_ =
+      "SDK Cubism belum dipasang di sistem.\\n\\n"
+      "Unduh Cubism SDK for Native dari situs Live2D, lalu bangun ulang — "
+      "caranya ada di README (bagian 'Cubism SDK').";
+  return galat_;
+#endif
+}

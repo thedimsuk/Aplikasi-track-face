@@ -1,0 +1,8 @@
+{
+  "name": "avatar-studio",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glew",
+    "sdl2"
+  ]
+}

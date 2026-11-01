@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ASU
+GenericName=Avatar Studio
+Comment=Avatar Live2D dengan pelacakan wajah dan audio
+Exec=avatar-studio
+TryExec=avatar-studio
+Terminal=false
+Categories=AudioVideo;
+Icon=asu

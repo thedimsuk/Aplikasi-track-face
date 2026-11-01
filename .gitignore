@@ -1,0 +1,23 @@
+# Build hasil kompilasi
+build/
+build-*/
+cmake-build-*/
+
+# Artefak build SDL2 lokal (dibuat ulang oleh tools/bangun-sdl2-lokal.sh)
+third_party/SDL2-*/
+third_party/*.tar.gz
+third_party/sdl2-build/
+third_party/sdl2-local/
+
+# Cubism SDK — TIDAK BOLEH masuk repositori (lisensi Live2D)
+third_party/CubismSdk-Native/
+
+# Cache CMake lokal
+CMakeCache.txt
+CMakeFiles/
+
+# Berkas sistem
+*.o
+*.a
+*.swp
+.DS_Store
